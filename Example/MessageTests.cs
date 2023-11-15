@@ -1,6 +1,7 @@
+using System.Diagnostics;
 using Azure.Messaging.ServiceBus;
-using Example.Commands;
-using Example.Events;
+using Example.Host.Commands;
+using Example.Host.Events;
 using FluentAssertions;
 using Newtonsoft.Json;
 
@@ -16,7 +17,7 @@ public class MessageTests
     [Test]
     public async Task When_Command_Is_Sent_Expect_Event_To_Be_Published()
     {
-        const string connectionString = "YOUR_CONNECTION_STRING_TO_ASB";
+        const string connectionString = "YOUR_CONNECTION_STRING";
         const string queue = "foo-queue";
         const string topic = "foo-topic";
         const string subscription = "foo-topic-test";
@@ -26,24 +27,27 @@ public class MessageTests
             Id = Guid.NewGuid().ToString(),
             Message = "hello world"
         };
-
-        var result = await new MessageAssertionHelper(connectionString)
+        var helper = new MessageAssertionHelper(connectionString);
+        var result = await helper
             .WithMessage(command)
             .SendTo(queue)
-            .ShouldReceive<FooBarEvent>(topic, subscription, @event => @event.Message == command.Message);
-        
+            .ContinueWith(_ => helper.ShouldReceive<FooBarEvent>(topic, subscription, @event => @event.Message == command.Message))
+            .WaitAsync(TimeSpan.FromSeconds(10))
+            .Unwrap();
+
         result!.Message.Should().Be(command.Message);
     }
 }
 
 public class MessageAssertionHelper
 {
+    private readonly TimeSpan _timeout;
     private readonly ServiceBusClient _client;
     private ServiceBusMessage _message = null!;
-    private string _destinationQueue = null!;
 
     public MessageAssertionHelper(string connectionString)
     {
+        _timeout = TimeSpan.FromSeconds(50);
         _client = new ServiceBusClient(connectionString);
     }
 
@@ -53,11 +57,10 @@ public class MessageAssertionHelper
         return this;
     }
 
-    public MessageAssertionHelper SendTo(string destinationQueueName)
+    public async Task<MessageAssertionHelper> SendTo(string destinationQueueName)
     {
-        _destinationQueue = destinationQueueName;
-        // var sender = _client.CreateSender(destinationQueueName);
-        // await sender.SendMessageAsync(_message);
+        var sender = _client.CreateSender(destinationQueueName);
+        await sender.SendMessageAsync(_message);
         return this;
     }
 
@@ -81,16 +84,21 @@ public class MessageAssertionHelper
             }
         };
         
-        processor.ProcessErrorAsync += args =>
-        {
-            throw new Exception($"Message assertion failed {args.Exception}.");
-        };
+        processor.ProcessErrorAsync += args => throw new Exception($"Message assertion failed {args.Exception}.");
+
+        var sw = new Stopwatch();
+        sw.Start();
         
         await processor.StartProcessingAsync();
         
-        while (result is null) // TODO: timeout control
+        while (result is null && sw.Elapsed < _timeout)
         {
             await Task.Delay(TimeSpan.FromSeconds(5));
+        }
+
+        if (result is null)
+        {
+            throw new TimeoutException("Message assertion has failed, timeout occurred.");
         }
         
         return result;

@@ -1,4 +1,4 @@
-namespace Example.Events;
+namespace Example.Host.Events;
 
 public class FooBarEvent
 {

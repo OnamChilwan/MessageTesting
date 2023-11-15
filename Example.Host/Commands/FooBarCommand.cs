@@ -1,4 +1,4 @@
-namespace Example.Commands;
+namespace Example.Host.Commands;
 
 public class FooBarCommand
 {
